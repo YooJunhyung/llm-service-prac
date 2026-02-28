@@ -1,0 +1,41 @@
+name: Deploy to AWS S3 & CloudFront
+
+on:
+  push:
+    branches:
+      - main # 메인 브랜치에 푸시될 때 실행
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 코드 가져오기
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      # 2. Node.js 설정 및 빌드
+      - name: Install dependencies and Build
+        run: |
+          npm install
+          npm run build
+
+      # 3. AWS 인증 설정
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ap-northeast-2
+
+      # 4. S3 업로드 (빌드 결과물 위치에 맞게 dist/build 수정)
+      - name: S3 Deploy
+        run: |
+          aws s3 sync ./dist s3://YOUR_BUCKET_NAME --delete
+
+      # 5. CloudFront 캐시 무효화 (Invalidation)
+      - name: CloudFront Invalidate
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id ${{ secrets.CLOUDFRONT_DISTRIBUTION_ID }} \
+            --paths "/*"

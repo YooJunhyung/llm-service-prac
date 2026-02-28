@@ -1,0 +1,46 @@
+name: PR Quality Gate (Jest & Cypress)
+
+on:
+  pull_request:
+    branches:
+      - main
+      - develop
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1. 코드 체크아웃
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # 2. Node.js 환경 설정
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      # 3. 의존성 설치
+      - name: Install dependencies
+        run: npm ci # npm install보다 빠르고 엄격한 설치
+
+      # 4. Jest 테스트 실행
+      - name: Run Jest (Unit Tests)
+        run: npm test -- --ci --colors --coverage
+        # --ci 옵션은 테스트 실패 시 에러 코드를 반환하여 워크플로를 중단시킵니다.
+
+      # 5. Cypress 테스트 실행 (서버 실행 후 테스트 진행)
+      - name: Run Cypress (E2E Tests)
+        uses: cypress-io/github-action@v6
+        with:
+          build: npm run build # 빌드 확인
+          start: npm start # 앱 실행 (Cypress가 접속할 수 있도록)
+          wait-on: "http://localhost:3000" # 서버가 뜰 때까지 대기
+          # 만약 100% 성공이 아니면 여기서 워크플로가 실패 처리됩니다.
+
+      # 6. (선택) 테스트 결과 요약 보고
+      - name: Test Result Summary
+        if: always()
+        run: echo "테스트 프로세스가 완료되었습니다."
