@@ -2,22 +2,20 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from google import genai
+from google.genai import types
 import json
 import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# Gemini API 설정
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 client = None
 if GEMINI_API_KEY:
-    # google-genai SDK 클라이언트 생성
     client = genai.Client(api_key=GEMINI_API_KEY)
 
 app = FastAPI()
 
-# CORS 설정
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -29,50 +27,58 @@ app.add_middleware(
 @app.post("/api/chat")
 async def chat(request: Request):
     data = await request.json()
-    message = data.get("message", "")
+    # 프론트엔드로부터 전체 메시지 리스트를 받습니다.
+    # messages: [{role: "user", content: "..."}, {role: "assistant", content: "..."}, ...]
+    messages = data.get("messages", [])
+    
+    # 마지막 메시지가 사용자의 질문입니다.
+    user_input = messages[-1]["content"]
+    
+    # 이전 대화 기록들을 Gemini 형식으로 변환 (system 제외 user/model 만)
+    history = []
+    for m in messages[:-1]:
+        # Gemini SDK는 'assistant' 대신 'model'이라는 role 명칭을 사용합니다.
+        role = "model" if m["role"] == "assistant" else "user"
+        history.append(types.Content(role=role, parts=[types.Part(text=m["content"])]))
 
     async def generate_stream():
         if not GEMINI_API_KEY or client is None:
-            yield f"data: {json.dumps({'content': 'GEMINI_API_KEY가 설정되지 않았습니다. .env 파일을 확인해주세요.'})}\n\n"
+            yield f"data: {json.dumps({'content': 'API 키가 없습니다.'})}\n\n"
             yield "data: [DONE]\n\n"
             return
 
         try:
-            # 2026년 기준 Stable 모델인 2.5-flash를 먼저 시도
-            # 만약 2.5가 안된다면 최신 별칭인 gemini-flash-latest 시도
-            selected_model = "gemini-2.5-flash"
-            
-            try:
-                response = await client.aio.models.generate_content_stream(
-                    model=selected_model,
-                    contents=message
+            # 채팅 세션 시작 (과거 이력 포함)
+            chat_session = client.aio.chats.create(
+                model="gemini-2.5-flash",
+                history=history,
+                config=types.GenerateContentConfig(
+                    thinking_config=types.ThinkingConfig(include_thoughts=True),
+                    system_instruction="너는 유능하고 친절한 AI 어시스턴트야. 한국어로 답변해줘."
                 )
-            except Exception:
-                selected_model = "gemini-flash-latest"
-                response = await client.aio.models.generate_content_stream(
-                    model=selected_model,
-                    contents=message
-                )
+            )
+
+            response = await chat_session.send_message_stream(user_input)
 
             async for chunk in response:
-                # 클라이언트가 연결을 끊었는지 매 청크마다 확인
                 if await request.is_disconnected():
-                    print("Client disconnected. Stopping stream...")
                     break
-
-                if chunk.text:
-                    data_str = json.dumps({"content": chunk.text})
-                    yield f"data: {data_str}\n\n"
+                
+                payload = {}
+                if chunk.candidates:
+                    for part in chunk.candidates[0].content.parts:
+                        if hasattr(part, "thought") and part.thought:
+                            payload["thought"] = part.thought
+                            continue
+                        if hasattr(part, "text") and part.text:
+                            payload["content"] = part.text
+                
+                if payload:
+                    yield f"data: {json.dumps(payload)}\n\n"
             
             yield "data: [DONE]\n\n"
         except Exception as e:
-            error_msg = str(e)
-            if "429" in error_msg:
-                friendly_msg = "현재 사용 중인 API 키의 무료 할당량이 소진되었거나, 해당 모델에 대한 접근이 제한되었습니다. (Google AI Studio에서 Quota 상태를 확인해 주세요.)"
-            else:
-                friendly_msg = f"에러 발생: {error_msg}"
-            
-            yield f"data: {json.dumps({'content': friendly_msg})}\n\n"
+            yield f"data: {json.dumps({'content': f'Error: {str(e)}'})}\n\n"
             yield "data: [DONE]\n\n"
 
     return StreamingResponse(generate_stream(), media_type="text/event-stream")
